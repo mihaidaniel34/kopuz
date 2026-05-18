@@ -7,20 +7,18 @@ use crate::web_storage::{
 };
 use components::{
     bottombar::Bottombar, download_overlay::DownloadOverlay, fullscreen::Fullscreen,
-    rightbar::Rightbar, sidebar::Sidebar, titlebar::Titlebar,
+    miniplayer::Miniplayer, rightbar::Rightbar, sidebar::Sidebar, titlebar::Titlebar,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use dioxus::desktop::RequestAsyncResponder;
 #[cfg(not(target_arch = "wasm32"))]
-use dioxus::desktop::tao::dpi::LogicalSize;
-#[cfg(not(target_arch = "wasm32"))]
-use dioxus::desktop::tao::window::Icon;
+use dioxus::desktop::tao::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 #[cfg(all(not(target_arch = "wasm32"), target_os = "macos"))]
 use dioxus::desktop::tao::platform::macos::WindowBuilderExtMacOS;
 #[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
 use dioxus::desktop::tao::platform::windows::WindowExtWindows;
-#[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
-use windows::Win32::Foundation::HWND;
+#[cfg(not(target_arch = "wasm32"))]
+use dioxus::desktop::tao::window::Icon;
 use dioxus::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
 use discord_presence::Presence;
@@ -35,6 +33,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+#[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
+use windows::Win32::Foundation::HWND;
 
 mod queue_state;
 mod web_storage;
@@ -81,9 +81,19 @@ const TAILWIND_CSS: Asset = asset!("../assets/tailwind.css");
 const REDUCED_ANIMATIONS_CSS: Asset = asset!("../assets/reduced-animations.css");
 const QUEUE_STATE_SAVE_DEBOUNCE_MS: u64 = 1200;
 const QUEUE_STATE_PROGRESS_STEP_SECS: u64 = 5;
+const MINIPLAYER_WIDTH: f64 = 420.0;
+const MINIPLAYER_HEIGHT: f64 = 132.0;
 
 #[cfg(not(target_arch = "wasm32"))]
 static PRESENCE: std::sync::OnceLock<Option<Arc<Presence>>> = std::sync::OnceLock::new();
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WindowRestoreState {
+    inner_size: PhysicalSize<u32>,
+    outer_position: Option<PhysicalPosition<i32>>,
+    was_maximized: bool,
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn build_window_icon() -> Option<Icon> {
@@ -776,11 +786,14 @@ fn App() -> Element {
 
     let is_playing = use_signal(|| false);
     let mut is_fullscreen = use_signal(|| false);
-    let is_rightbar_open = use_signal(|| false);
+    let mut is_miniplayer = use_signal(|| false);
+    let mut is_rightbar_open = use_signal(|| false);
     let rightbar_width = use_signal(|| 320usize);
     let mut palette = use_signal(|| Option::<Vec<utils::color::Color>>::None);
     let mut pending_queue_state_snapshot = use_signal(|| None::<PersistedQueueState>);
     let mut pending_queue_state_revision = use_signal(|| 0u64);
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut miniplayer_restore_state = use_signal(|| None::<WindowRestoreState>);
 
     #[cfg(all(not(target_arch = "wasm32"), target_os = "macos"))]
     use_effect(move || {
@@ -813,6 +826,85 @@ fn App() -> Element {
                 links.forEach(function(l){if(l.sheet){onLoad();}else{l.addEventListener('load',onLoad);l.addEventListener('error',onLoad);}});
             })();"#,
         );
+    });
+
+    use_effect(move || {
+        if *is_miniplayer.read() {
+            is_fullscreen.set(false);
+            is_rightbar_open.set(false);
+        }
+    });
+
+    #[cfg(not(target_arch = "wasm32"))]
+    use_effect(move || {
+        let is_active = *is_miniplayer.read();
+        let win = dioxus::desktop::use_window();
+
+        if is_active {
+            let was_maximized = win.window.is_maximized();
+            let current_outer_position = win.window.outer_position().ok();
+            let current_outer_size = win.window.outer_size();
+            let anchor_bottom_right = if was_maximized {
+                win.window.current_monitor().map(|monitor| {
+                    let position = monitor.position();
+                    let size = monitor.size();
+                    PhysicalPosition::new(
+                        position.x + size.width as i32,
+                        position.y + size.height as i32,
+                    )
+                })
+            } else {
+                current_outer_position.map(|position| {
+                    PhysicalPosition::new(
+                        position.x + current_outer_size.width as i32,
+                        position.y + current_outer_size.height as i32,
+                    )
+                })
+            };
+
+            if miniplayer_restore_state.peek().is_none() {
+                miniplayer_restore_state.set(Some(WindowRestoreState {
+                    inner_size: win.window.inner_size(),
+                    outer_position: current_outer_position,
+                    was_maximized,
+                }));
+            }
+
+            if was_maximized {
+                win.window.set_maximized(false);
+            }
+
+            let size = LogicalSize::new(MINIPLAYER_WIDTH, MINIPLAYER_HEIGHT);
+            win.window.set_always_on_top(true);
+            win.window.set_resizable(false);
+            win.window.set_min_inner_size(Some(size));
+            win.window.set_max_inner_size(Some(size));
+            win.window.set_inner_size(size);
+
+            if let Some(anchor) = anchor_bottom_right {
+                let compact_outer_size = win.window.outer_size();
+                win.window.set_outer_position(PhysicalPosition::new(
+                    anchor.x - compact_outer_size.width as i32,
+                    anchor.y - compact_outer_size.height as i32,
+                ));
+            }
+        } else {
+            win.window.set_always_on_top(false);
+            win.window.set_resizable(true);
+            win.window.set_min_inner_size(None::<LogicalSize<f64>>);
+            win.window.set_max_inner_size(None::<LogicalSize<f64>>);
+
+            if let Some(snapshot) = miniplayer_restore_state.write().take() {
+                if snapshot.was_maximized {
+                    win.window.set_maximized(true);
+                } else {
+                    win.window.set_inner_size(snapshot.inner_size);
+                    if let Some(position) = snapshot.outer_position {
+                        win.window.set_outer_position(position);
+                    }
+                }
+            }
+        }
     });
 
     use_effect(move || {
@@ -1503,372 +1595,394 @@ fn App() -> Element {
                 use dioxus::prelude::Key;
                 let key = evt.key();
                 if key == Key::Escape {
-                    is_fullscreen.set(false);
+                    if *is_fullscreen.read() {
+                        is_fullscreen.set(false);
+                    } else if *is_miniplayer.read() {
+                        is_miniplayer.set(false);
+                    }
                 } else if key == Key::Character(" ".into()) {
                     ctrl.toggle();
                 }
             },
-            if cfg!(any(target_os = "linux", target_os = "windows")) {
+            if !*is_miniplayer.read() && cfg!(any(target_os = "linux", target_os = "windows")) {
                 div { dir: "ltr", Titlebar {} }
             }
-            if config.read().active_source == config::MusicSource::Local {
-                if let Some(file) = scan_current_file.read().clone() {
+            if *is_miniplayer.read() {
+                Miniplayer {
+                    favorites_store,
+                    config,
+                    player,
+                    is_playing,
+                    is_fullscreen,
+                    is_miniplayer,
+                    current_song_duration,
+                    current_song_progress,
+                    current_song_title,
+                    current_song_artist,
+                    current_song_cover_url,
+                }
+            } else {
+                if config.read().active_source == config::MusicSource::Local {
+                    if let Some(file) = scan_current_file.read().clone() {
+                        div {
+                            class: "flex-shrink-0",
+                            div {
+                                class: "h-[2px] bg-white/5 overflow-hidden",
+                                div { class: "h-full w-1/4 bg-[var(--color-primary,#6366f1)] animate-scan" }
+                            }
+                            div {
+                                class: "px-3 py-[3px] flex items-center gap-2 bg-black/30 border-b border-white/5",
+                                i { class: "fa-solid fa-compact-disc fa-spin text-[9px] text-white/30 flex-shrink-0" }
+                                span {
+                                    class: "text-[10px] text-white/35 font-mono truncate",
+                                    if file.is_empty() {
+                                        "Scanning library…"
+                                    } else {
+                                        "{file}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(is_offline) = *network_banner.read() {
                     div {
                         class: "flex-shrink-0",
                         div {
-                            class: "h-[2px] bg-white/5 overflow-hidden",
-                            div { class: "h-full w-1/4 bg-[var(--color-primary,#6366f1)] animate-scan" }
-                        }
-                        div {
-                            class: "px-3 py-[3px] flex items-center gap-2 bg-black/30 border-b border-white/5",
-                            i { class: "fa-solid fa-compact-disc fa-spin text-[9px] text-white/30 flex-shrink-0" }
-                            span {
-                                class: "text-[10px] text-white/35 font-mono truncate",
-                                if file.is_empty() {
-                                    "Scanning library…"
-                                } else {
-                                    "{file}"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if let Some(is_offline) = *network_banner.read() {
-                div {
-                    class: "flex-shrink-0",
-                    div {
-                        class: if is_offline {
-                            "flex items-center justify-between gap-3 px-4 py-2 bg-amber-500/15 border-b border-amber-500/20 text-amber-300 text-sm"
-                        } else {
-                            "flex items-center justify-between gap-3 px-4 py-2 bg-emerald-500/15 border-b border-emerald-500/20 text-emerald-300 text-sm"
-                        },
-                        div {
-                            class: "flex items-center gap-2",
-                            i { class: if is_offline { "fa-solid fa-wifi-slash text-xs" } else { "fa-solid fa-wifi text-xs" } }
-                            span {
-                                if is_offline {
-                                    "No internet connection — switched to offline mode"
-                                } else {
-                                    "Back online — switched to server mode"
-                                }
-                            }
-                            if is_offline {
-                                button {
-                                    class: "ml-2 text-xs underline opacity-70 hover:opacity-100 transition-opacity",
-                                    onclick: move |_| {
-                                        config.write().active_source = config::MusicSource::Server;
-                                        network_banner.set(None);
-                                    },
-                                    "Keep server mode"
-                                }
-                            }
-                        }
-                        button {
-                            class: "opacity-50 hover:opacity-100 transition-opacity p-1",
-                            onclick: move |_| network_banner.set(None),
-                            i { class: "fa-solid fa-xmark text-xs" }
-                        }
-                    }
-                }
-            }
-
-            if let Some(update) = {
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    update_banner_state.clone()
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    None
-                }
-            } {
-                div {
-                    class: "flex-shrink-0",
-                    div {
-                        class: "flex items-center justify-between gap-3 px-4 py-2 bg-sky-500/15 border-b border-sky-500/20 text-sky-200 text-sm",
-                        div {
-                            class: "flex items-center gap-2",
-                            i { class: "fa-solid fa-download text-xs" }
-                            span { class: "font-medium", "{i18n::t(\"update_available\")} - " }
-                            span { "{i18n::t_with(\"update_banner_message\", &[(\"version\", update.version.clone())])}" }
-                            button {
-                                class: "ml-2 text-xs underline opacity-80 hover:opacity-100 transition-opacity",
-                                onclick: {
-                                    let release_url = update.release_url.clone();
-                                    move |_| {
-                                        if let Err(e) = webbrowser::open(&release_url) {
-                                            tracing::error!("Failed to open release page: {}", e);
-                                        }
-                                    }
-                                },
-                                "{i18n::t(\"view_release\")}"
-                            }
-                        }
-                        button {
-                            class: "opacity-50 hover:opacity-100 transition-opacity p-1",
-                            onclick: move |_| update_banner.set(None),
-                            i { class: "fa-solid fa-xmark text-xs" }
-                        }
-                    }
-                }
-            }
-
-            if config.read().player_bar_position == config::PlayerBarPosition::Top {
-                Bottombar {
-                    library: library,
-                    favorites_store,
-                    config,
-                    current_song_cover_url: current_song_cover_url,
-                    current_song_title: current_song_title,
-                    current_song_artist: current_song_artist,
-                    player: player,
-                    is_playing: is_playing,
-                    is_fullscreen: is_fullscreen,
-                    current_song_duration: current_song_duration,
-                    current_song_progress: current_song_progress,
-                    queue: queue,
-                    current_queue_index: current_queue_index,
-                    volume: volume,
-                    persisted_volume: persisted_volume,
-                    is_rightbar_open: is_rightbar_open,
-                }
-            }
-            div {
-                class: "{content_row_class}",
-                Sidebar {
-                    current_route,
-                    on_navigate: move |route| {
-                        if route == Route::Album {
-                            selected_album_id.set(String::new());
-                        }
-                        if route == Route::Artist {
-                            selected_artist_name.set(String::new());
-                        }
-                        current_route.set(route);
-                    }
-                }
-                div {
-                    id: "main-scroll-area",
-                    class: "flex-1 overflow-y-auto",
-                    onscroll: move |evt| {
-                        let pos = evt.scroll_top();
-                        scroll_positions.write().insert(*current_route.peek(), pos);
-                    },
-                    match *current_route.read() {
-                        Route::Home => rsx! {
-                            pages::home::Home {
-                                library,
-                                playlist_store,
-                                favorites_store,
-                                on_select_album: move |id: String| {
-                                    selected_album_id.set(id);
-                                    current_route.set(Route::Album);
-                                },
-                                on_play_album: move |id: String| {
-                                    selected_album_id.set(id.clone());
-
-                                    let lib = library.peek();
-                                    let is_jelly = id.starts_with("jellyfin:");
-                                    let mut tracks: Vec<reader::Track> = if is_jelly {
-                                        lib.jellyfin_tracks.iter().filter(|t| t.album_id == id).cloned().collect()
+                            class: if is_offline {
+                                "flex items-center justify-between gap-3 px-4 py-2 bg-amber-500/15 border-b border-amber-500/20 text-amber-300 text-sm"
+                            } else {
+                                "flex items-center justify-between gap-3 px-4 py-2 bg-emerald-500/15 border-b border-emerald-500/20 text-emerald-300 text-sm"
+                            },
+                            div {
+                                class: "flex items-center gap-2",
+                                i { class: if is_offline { "fa-solid fa-wifi-slash text-xs" } else { "fa-solid fa-wifi text-xs" } }
+                                span {
+                                    if is_offline {
+                                        "No internet connection — switched to offline mode"
                                     } else {
-                                        lib.tracks.iter().filter(|t| t.album_id == id).cloned().collect()
-                                    };
-
-                                    if !tracks.is_empty() {
-                                        tracks.sort_by(|a, b| {
-                                            let disc_cmp = a.disc_number.unwrap_or(1).cmp(&b.disc_number.unwrap_or(1));
-                                            if disc_cmp == std::cmp::Ordering::Equal {
-                                                a.track_number.unwrap_or(0).cmp(&b.track_number.unwrap_or(0))
-                                            } else {
-                                                disc_cmp
-                                            }
-                                        });
-                                        queue.set(tracks);
-                                        ctrl.play_track(0);
+                                        "Back online — switched to server mode"
                                     }
-                                    current_route.set(Route::Album);
-                                },
-                                on_select_playlist: move |id: String| {
-                                    selected_playlist_id.set(Some(id));
-                                    current_route.set(Route::Playlists);
-                                },
-                                on_search_artist: move |artist: String| {
-                                    selected_artist_name.set(artist);
-                                    current_route.set(Route::Artist);
+                                }
+                                if is_offline {
+                                    button {
+                                        class: "ml-2 text-xs underline opacity-70 hover:opacity-100 transition-opacity",
+                                        onclick: move |_| {
+                                            config.write().active_source = config::MusicSource::Server;
+                                            network_banner.set(None);
+                                        },
+                                        "Keep server mode"
+                                    }
                                 }
                             }
-                        },
-                        Route::Search => rsx! {
-                            pages::search::Search {
-                                library: library,
-                                config: config,
-                                playlist_store: playlist_store,
-                                search_query: search_query,
-                                player: player,
-                                is_playing: is_playing,
-                                current_playing: current_playing,
-                                current_song_cover_url: current_song_cover_url,
-                                current_song_title: current_song_title,
-                                current_song_artist: current_song_artist,
-                                current_song_duration: current_song_duration,
-                                current_song_progress: current_song_progress,
-                                queue: queue,
-                                current_queue_index: current_queue_index,
-                                on_select_album: move |id: String| {
-                                    selected_album_id.set(id);
-                                    current_route.set(Route::Album);
-                                },
+                            button {
+                                class: "opacity-50 hover:opacity-100 transition-opacity p-1",
+                                onclick: move |_| network_banner.set(None),
+                                i { class: "fa-solid fa-xmark text-xs" }
                             }
-                        },
-                        Route::Library => rsx! {
-                            pages::library::LibraryPage {
-                                library: library,
-                                config: config,
-                                playlist_store: playlist_store,
-                                on_rescan: move |_| *trigger_rescan.write() += 1,
-                                player: player,
-                                is_playing: is_playing,
-                                current_playing: current_playing,
-                                current_song_cover_url: current_song_cover_url,
-                                current_song_title: current_song_title,
-                                current_song_artist: current_song_artist,
-                                current_song_duration: current_song_duration,
-                                current_song_progress: current_song_progress,
-                                queue: queue,
-                                current_queue_index: current_queue_index,
-                            }
-                        },
-                        Route::Album => rsx! {
-                            pages::album::Album {
-                                library: library,
-                                config: config,
-                                album_id: selected_album_id,
-                                playlist_store: playlist_store,
-                                queue: queue,
-                                current_queue_index: current_queue_index,
-                            }
-                        },
-                        Route::Artist => rsx! {
-                            pages::artist::Artist {
-                                library: library,
-                                config: config,
-                                artist_name: selected_artist_name,
-                                playlist_store: playlist_store,
-                                player: player,
-                                on_navigate: move |album_id| {
-                                    selected_album_id.set(album_id);
-                                    current_route.set(Route::Album);
-                                },
-                                is_playing: is_playing,
-                                current_playing: current_playing,
-                                current_song_cover_url: current_song_cover_url,
-                                current_song_title: current_song_title,
-                                current_song_artist: current_song_artist,
-                                current_song_duration: current_song_duration,
-                                current_song_progress: current_song_progress,
-                                queue: queue,
-                                current_queue_index: current_queue_index,
-                            }
-                        },
-                        Route::Favorites => rsx! {
-                            pages::favorites::FavoritesPage {
-                                favorites_store,
-                                library,
-                                config,
-                                playlist_store,
-                                player,
-                                is_playing,
-                                current_playing,
-                                current_song_cover_url,
-                                current_song_title,
-                                current_song_artist,
-                                current_song_duration,
-                                current_song_progress,
-                                queue,
-                                current_queue_index,
-                            }
-                        },
-                        Route::Playlists => rsx! {
-                            pages::playlists::PlaylistsPage {
-                                playlist_store: playlist_store,
-                                library: library,
-                                config: config,
-                                selected_playlist_id: selected_playlist_id,
-                            }
-                        },
-                        Route::Activity => rsx! {
-                          pages::activity::Activity {
-                              library: library,
-                              config: config,
-                          }
-                        },
-                        Route::Radio => rsx! {
-                            pages::radio::Radio {
-                                config: config,
-                            }
-                        },
-                        #[cfg(not(target_arch = "wasm32"))]
-                        Route::Ytdlp => rsx! { pages::ytdlp::YtdlpPage { config, trigger_rescan } },
-                        #[cfg(target_arch = "wasm32")]
-                        Route::Ytdlp => rsx! { pages::settings::Settings { config } },
-                        Route::Settings => rsx! { pages::settings::Settings { config } },
-                        Route::ThemeEditor => rsx! { pages::theme_editor::ThemeEditorPage { config } },
+                        }
                     }
                 }
-                Rightbar {
-                    library: library,
-                    is_rightbar_open: is_rightbar_open,
-                    width: rightbar_width,
-                    current_song_duration: current_song_duration,
-                    current_song_progress: current_song_progress,
-                    queue: queue,
-                    current_queue_index: current_queue_index,
-                    current_song_title: current_song_title,
-                    current_song_artist: current_song_artist,
-                    current_song_album: current_song_album,
+
+                if let Some(update) = {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        update_banner_state.clone()
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        None
+                    }
+                } {
+                    div {
+                        class: "flex-shrink-0",
+                        div {
+                            class: "flex items-center justify-between gap-3 px-4 py-2 bg-sky-500/15 border-b border-sky-500/20 text-sky-200 text-sm",
+                            div {
+                                class: "flex items-center gap-2",
+                                i { class: "fa-solid fa-download text-xs" }
+                                span { class: "font-medium", "{i18n::t(\"update_available\")} - " }
+                                span { "{i18n::t_with(\"update_banner_message\", &[(\"version\", update.version.clone())])}" }
+                                button {
+                                    class: "ml-2 text-xs underline opacity-80 hover:opacity-100 transition-opacity",
+                                    onclick: {
+                                        let release_url = update.release_url.clone();
+                                        move |_| {
+                                            if let Err(e) = webbrowser::open(&release_url) {
+                                                tracing::error!("Failed to open release page: {}", e);
+                                            }
+                                        }
+                                    },
+                                    "{i18n::t(\"view_release\")}"
+                                }
+                            }
+                            button {
+                                class: "opacity-50 hover:opacity-100 transition-opacity p-1",
+                                onclick: move |_| update_banner.set(None),
+                                i { class: "fa-solid fa-xmark text-xs" }
+                            }
+                        }
+                    }
                 }
-            }
-            Fullscreen {
-                library: library,
-                player: player,
-                is_playing: is_playing,
-                is_fullscreen: is_fullscreen,
-                current_song_duration: current_song_duration,
-                current_song_progress: current_song_progress,
-                queue: queue,
-                current_song_album: current_song_album,
-                current_queue_index: current_queue_index,
-                current_song_title: current_song_title,
-                current_song_khz: current_song_khz,
-                current_song_bitrate: current_song_bitrate,
-                current_song_artist: current_song_artist,
-                current_song_cover_url: current_song_cover_url,
-                volume: volume,
-                persisted_volume: persisted_volume,
-                palette: palette,
-            }
-            DownloadOverlay { queue: download_queue }
-            if config.read().player_bar_position == config::PlayerBarPosition::Bottom {
-                Bottombar {
+
+                if config.read().player_bar_position == config::PlayerBarPosition::Top {
+                    Bottombar {
+                        library: library,
+                        favorites_store,
+                        config,
+                        current_song_cover_url: current_song_cover_url,
+                        current_song_title: current_song_title,
+                        current_song_artist: current_song_artist,
+                        player: player,
+                        is_playing: is_playing,
+                        is_fullscreen: is_fullscreen,
+                        is_miniplayer: is_miniplayer,
+                        current_song_duration: current_song_duration,
+                        current_song_progress: current_song_progress,
+                        queue: queue,
+                        current_queue_index: current_queue_index,
+                        volume: volume,
+                        persisted_volume: persisted_volume,
+                        is_rightbar_open: is_rightbar_open,
+                    }
+                }
+                div {
+                    class: "{content_row_class}",
+                    Sidebar {
+                        current_route,
+                        on_navigate: move |route| {
+                            if route == Route::Album {
+                                selected_album_id.set(String::new());
+                            }
+                            if route == Route::Artist {
+                                selected_artist_name.set(String::new());
+                            }
+                            current_route.set(route);
+                        }
+                    }
+                    div {
+                        id: "main-scroll-area",
+                        class: "flex-1 overflow-y-auto",
+                        onscroll: move |evt| {
+                            let pos = evt.scroll_top();
+                            scroll_positions.write().insert(*current_route.peek(), pos);
+                        },
+                        match *current_route.read() {
+                            Route::Home => rsx! {
+                                pages::home::Home {
+                                    library,
+                                    playlist_store,
+                                    favorites_store,
+                                    on_select_album: move |id: String| {
+                                        selected_album_id.set(id);
+                                        current_route.set(Route::Album);
+                                    },
+                                    on_play_album: move |id: String| {
+                                        selected_album_id.set(id.clone());
+
+                                        let lib = library.peek();
+                                        let is_jelly = id.starts_with("jellyfin:");
+                                        let mut tracks: Vec<reader::Track> = if is_jelly {
+                                            lib.jellyfin_tracks.iter().filter(|t| t.album_id == id).cloned().collect()
+                                        } else {
+                                            lib.tracks.iter().filter(|t| t.album_id == id).cloned().collect()
+                                        };
+
+                                        if !tracks.is_empty() {
+                                            tracks.sort_by(|a, b| {
+                                                let disc_cmp = a.disc_number.unwrap_or(1).cmp(&b.disc_number.unwrap_or(1));
+                                                if disc_cmp == std::cmp::Ordering::Equal {
+                                                    a.track_number.unwrap_or(0).cmp(&b.track_number.unwrap_or(0))
+                                                } else {
+                                                    disc_cmp
+                                                }
+                                            });
+                                            queue.set(tracks);
+                                            ctrl.play_track(0);
+                                        }
+                                        current_route.set(Route::Album);
+                                    },
+                                    on_select_playlist: move |id: String| {
+                                        selected_playlist_id.set(Some(id));
+                                        current_route.set(Route::Playlists);
+                                    },
+                                    on_search_artist: move |artist: String| {
+                                        selected_artist_name.set(artist);
+                                        current_route.set(Route::Artist);
+                                    }
+                                }
+                            },
+                            Route::Search => rsx! {
+                                pages::search::Search {
+                                    library: library,
+                                    config: config,
+                                    playlist_store: playlist_store,
+                                    search_query: search_query,
+                                    player: player,
+                                    is_playing: is_playing,
+                                    current_playing: current_playing,
+                                    current_song_cover_url: current_song_cover_url,
+                                    current_song_title: current_song_title,
+                                    current_song_artist: current_song_artist,
+                                    current_song_duration: current_song_duration,
+                                    current_song_progress: current_song_progress,
+                                    queue: queue,
+                                    current_queue_index: current_queue_index,
+                                    on_select_album: move |id: String| {
+                                        selected_album_id.set(id);
+                                        current_route.set(Route::Album);
+                                    },
+                                }
+                            },
+                            Route::Library => rsx! {
+                                pages::library::LibraryPage {
+                                    library: library,
+                                    config: config,
+                                    playlist_store: playlist_store,
+                                    on_rescan: move |_| *trigger_rescan.write() += 1,
+                                    player: player,
+                                    is_playing: is_playing,
+                                    current_playing: current_playing,
+                                    current_song_cover_url: current_song_cover_url,
+                                    current_song_title: current_song_title,
+                                    current_song_artist: current_song_artist,
+                                    current_song_duration: current_song_duration,
+                                    current_song_progress: current_song_progress,
+                                    queue: queue,
+                                    current_queue_index: current_queue_index,
+                                }
+                            },
+                            Route::Album => rsx! {
+                                pages::album::Album {
+                                    library: library,
+                                    config: config,
+                                    album_id: selected_album_id,
+                                    playlist_store: playlist_store,
+                                    queue: queue,
+                                    current_queue_index: current_queue_index,
+                                }
+                            },
+                            Route::Artist => rsx! {
+                                pages::artist::Artist {
+                                    library: library,
+                                    config: config,
+                                    artist_name: selected_artist_name,
+                                    playlist_store: playlist_store,
+                                    player: player,
+                                    on_navigate: move |album_id| {
+                                        selected_album_id.set(album_id);
+                                        current_route.set(Route::Album);
+                                    },
+                                    is_playing: is_playing,
+                                    current_playing: current_playing,
+                                    current_song_cover_url: current_song_cover_url,
+                                    current_song_title: current_song_title,
+                                    current_song_artist: current_song_artist,
+                                    current_song_duration: current_song_duration,
+                                    current_song_progress: current_song_progress,
+                                    queue: queue,
+                                    current_queue_index: current_queue_index,
+                                }
+                            },
+                            Route::Favorites => rsx! {
+                                pages::favorites::FavoritesPage {
+                                    favorites_store,
+                                    library,
+                                    config,
+                                    playlist_store,
+                                    player,
+                                    is_playing,
+                                    current_playing,
+                                    current_song_cover_url,
+                                    current_song_title,
+                                    current_song_artist,
+                                    current_song_duration,
+                                    current_song_progress,
+                                    queue,
+                                    current_queue_index,
+                                }
+                            },
+                            Route::Playlists => rsx! {
+                                pages::playlists::PlaylistsPage {
+                                    playlist_store: playlist_store,
+                                    library: library,
+                                    config: config,
+                                    selected_playlist_id: selected_playlist_id,
+                                }
+                            },
+                            Route::Activity => rsx! {
+                              pages::activity::Activity {
+                                  library: library,
+                                  config: config,
+                              }
+                            },
+                            Route::Radio => rsx! {
+                                pages::radio::Radio {
+                                    config: config,
+                                }
+                            },
+                            #[cfg(not(target_arch = "wasm32"))]
+                            Route::Ytdlp => rsx! { pages::ytdlp::YtdlpPage { config, trigger_rescan } },
+                            #[cfg(target_arch = "wasm32")]
+                            Route::Ytdlp => rsx! { pages::settings::Settings { config } },
+                            Route::Settings => rsx! { pages::settings::Settings { config } },
+                            Route::ThemeEditor => rsx! { pages::theme_editor::ThemeEditorPage { config } },
+                        }
+                    }
+                    Rightbar {
+                        library: library,
+                        is_rightbar_open: is_rightbar_open,
+                        width: rightbar_width,
+                        current_song_duration: current_song_duration,
+                        current_song_progress: current_song_progress,
+                        queue: queue,
+                        current_queue_index: current_queue_index,
+                        current_song_title: current_song_title,
+                        current_song_artist: current_song_artist,
+                        current_song_album: current_song_album,
+                    }
+                }
+                Fullscreen {
                     library: library,
-                    favorites_store,
-                    config,
-                    current_song_cover_url: current_song_cover_url,
-                    current_song_title: current_song_title,
-                    current_song_artist: current_song_artist,
                     player: player,
                     is_playing: is_playing,
                     is_fullscreen: is_fullscreen,
                     current_song_duration: current_song_duration,
                     current_song_progress: current_song_progress,
                     queue: queue,
+                    current_song_album: current_song_album,
                     current_queue_index: current_queue_index,
+                    current_song_title: current_song_title,
+                    current_song_khz: current_song_khz,
+                    current_song_bitrate: current_song_bitrate,
+                    current_song_artist: current_song_artist,
+                    current_song_cover_url: current_song_cover_url,
                     volume: volume,
                     persisted_volume: persisted_volume,
-                    is_rightbar_open: is_rightbar_open,
+                    palette: palette,
+                }
+                DownloadOverlay { queue: download_queue }
+                if config.read().player_bar_position == config::PlayerBarPosition::Bottom {
+                    Bottombar {
+                        library: library,
+                        favorites_store,
+                        config,
+                        current_song_cover_url: current_song_cover_url,
+                        current_song_title: current_song_title,
+                        current_song_artist: current_song_artist,
+                        player: player,
+                        is_playing: is_playing,
+                        is_fullscreen: is_fullscreen,
+                        is_miniplayer: is_miniplayer,
+                        current_song_duration: current_song_duration,
+                        current_song_progress: current_song_progress,
+                        queue: queue,
+                        current_queue_index: current_queue_index,
+                        volume: volume,
+                        persisted_volume: persisted_volume,
+                        is_rightbar_open: is_rightbar_open,
+                    }
                 }
             }
         }

@@ -10,6 +10,7 @@ pub mod folder_picker;
 pub mod bottombar;
 pub mod dots_menu;
 pub mod fullscreen;
+pub mod miniplayer;
 pub mod playlist_detail;
 pub mod playlist_modal;
 pub mod playlist_popups;

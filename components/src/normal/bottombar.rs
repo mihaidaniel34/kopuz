@@ -15,6 +15,7 @@ pub fn BottombarNormal(
     mut player: Signal<Player>,
     mut is_playing: Signal<bool>,
     mut is_fullscreen: Signal<bool>,
+    mut is_miniplayer: Signal<bool>,
     mut current_song_duration: Signal<u64>,
     mut current_song_progress: Signal<u64>,
     queue: Signal<Vec<reader::models::Track>>,
@@ -276,6 +277,18 @@ pub fn BottombarNormal(
                     class: "text-slate-400 hover:text-white",
                     onclick: move |_| { let c = *is_rightbar_open.read(); is_rightbar_open.set(!c); },
                     i { class: "fa-solid fa-list text-xs" }
+                }
+                if cfg!(not(target_arch = "wasm32")) {
+                    button {
+                        class: "text-slate-400 hover:text-white",
+                        title: "Open mini player",
+                        "aria-label": "Open mini player",
+                        onclick: move |_| {
+                            is_fullscreen.set(false);
+                            is_miniplayer.set(true);
+                        },
+                        i { class: "fa-solid fa-window-restore text-xs" }
+                    }
                 }
                 button {
                     class: "text-slate-400 hover:text-white",

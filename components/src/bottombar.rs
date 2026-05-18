@@ -14,6 +14,7 @@ pub fn Bottombar(
     player: Signal<Player>,
     is_playing: Signal<bool>,
     is_fullscreen: Signal<bool>,
+    is_miniplayer: Signal<bool>,
     current_song_duration: Signal<u64>,
     current_song_progress: Signal<u64>,
     queue: Signal<Vec<reader::models::Track>>,
@@ -29,6 +30,7 @@ pub fn Bottombar(
         UiStyle::Normal => rsx! {
             BottombarNormal {
                 library, favorites_store, config, player, is_playing, is_fullscreen,
+                is_miniplayer,
                 current_song_duration, current_song_progress, queue, current_queue_index,
                 current_song_title, current_song_artist, current_song_cover_url,
                 volume, persisted_volume, is_rightbar_open,
@@ -37,6 +39,7 @@ pub fn Bottombar(
         UiStyle::Modern => rsx! {
             BottombarModern {
                 library, favorites_store, config, player, is_playing, is_fullscreen,
+                is_miniplayer,
                 current_song_duration, current_song_progress, queue, current_queue_index,
                 current_song_title, current_song_artist, current_song_cover_url,
                 volume, persisted_volume, is_rightbar_open,

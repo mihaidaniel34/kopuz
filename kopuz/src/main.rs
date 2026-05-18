@@ -93,6 +93,7 @@ struct WindowRestoreState {
     inner_size: PhysicalSize<u32>,
     outer_position: Option<PhysicalPosition<i32>>,
     was_maximized: bool,
+    rightbar_was_open: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -828,13 +829,6 @@ fn App() -> Element {
         );
     });
 
-    use_effect(move || {
-        if *is_miniplayer.read() {
-            is_fullscreen.set(false);
-            is_rightbar_open.set(false);
-        }
-    });
-
     #[cfg(not(target_arch = "wasm32"))]
     use_effect(move || {
         let is_active = *is_miniplayer.read();
@@ -844,35 +838,28 @@ fn App() -> Element {
             let was_maximized = win.window.is_maximized();
             let current_outer_position = win.window.outer_position().ok();
             let current_outer_size = win.window.outer_size();
-            let anchor_bottom_right = if was_maximized {
-                win.window.current_monitor().map(|monitor| {
-                    let position = monitor.position();
-                    let size = monitor.size();
-                    PhysicalPosition::new(
-                        position.x + size.width as i32,
-                        position.y + size.height as i32,
-                    )
-                })
-            } else {
-                current_outer_position.map(|position| {
-                    PhysicalPosition::new(
-                        position.x + current_outer_size.width as i32,
-                        position.y + current_outer_size.height as i32,
-                    )
-                })
-            };
+            let anchor_bottom_right = current_outer_position.map(|position| {
+                PhysicalPosition::new(
+                    position.x + current_outer_size.width as i32,
+                    position.y + current_outer_size.height as i32,
+                )
+            });
 
             if miniplayer_restore_state.peek().is_none() {
                 miniplayer_restore_state.set(Some(WindowRestoreState {
                     inner_size: win.window.inner_size(),
                     outer_position: current_outer_position,
                     was_maximized,
+                    rightbar_was_open: *is_rightbar_open.read(),
                 }));
             }
 
             if was_maximized {
                 win.window.set_maximized(false);
             }
+
+            is_fullscreen.set(false);
+            is_rightbar_open.set(false);
 
             let size = LogicalSize::new(MINIPLAYER_WIDTH, MINIPLAYER_HEIGHT);
             win.window.set_always_on_top(true);
@@ -896,6 +883,9 @@ fn App() -> Element {
 
             if let Some(snapshot) = miniplayer_restore_state.write().take() {
                 if snapshot.was_maximized {
+                    if let Some(position) = snapshot.outer_position {
+                        win.window.set_outer_position(position);
+                    }
                     win.window.set_maximized(true);
                 } else {
                     win.window.set_inner_size(snapshot.inner_size);
@@ -903,6 +893,8 @@ fn App() -> Element {
                         win.window.set_outer_position(position);
                     }
                 }
+
+                is_rightbar_open.set(snapshot.rightbar_was_open);
             }
         }
     });
